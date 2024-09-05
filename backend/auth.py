@@ -99,6 +99,7 @@ def checkPassword(pw):
         return True
 
 @auth_bp.route("/admit", methods=["GET", "POST"])
+
 def login():
     # data = request.get_json()
     if request.method == "POST":
