@@ -19,6 +19,8 @@ class User(db.Model):
     password = db.Column(db.String(200), nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
     profile = db.relationship("Profile", uselist=False, backref="user")
+    # Add trips relationship
+    trips = db.relationship("Trip", secondary=user_trips, back_populates="users")
     budgets = db.relationship("Budget", backref="user", lazy=True)
     chat_logs = db.relationship("ChatLog", backref="user", lazy=True)
 
@@ -28,8 +30,8 @@ class Profile(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(80))
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
-    # Relationship to trips through the association table
-    past_trips = db.relationship("Trip", secondary=user_trips, back_populates="users")
+    # Remove the past_trips relationship
+    # You can access trips via user.trips
 
 
 class Trip(db.Model):
@@ -37,9 +39,8 @@ class Trip(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     trip_name = db.Column(db.String(100), nullable=False)
     invite_code = db.Column(db.String(10), unique=True)
-    users = db.relationship(
-        "User", secondary=user_trips, back_populates="profile.past_trips"
-    )
+    # Correct the users relationship
+    users = db.relationship("User", secondary=user_trips, back_populates="trips")
     itinerary_items = db.relationship("ItineraryItem", backref="trip", lazy=True)
     budgets = db.relationship("Budget", backref="trip", lazy=True)
     chatroom_id = db.Column(db.Integer, db.ForeignKey("chatrooms.id"))

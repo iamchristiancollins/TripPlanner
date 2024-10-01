@@ -1,4 +1,5 @@
 # app.py
+from flask_migrate import Migrate
 from flask import (
     Flask,
     render_template,
@@ -17,6 +18,7 @@ from datetime import datetime
 import jwt
 from backend.itinerary import generate_invite_code
 
+
 load_dotenv()
 
 app = Flask(__name__)
@@ -27,16 +29,10 @@ app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL")
 app.config["SECRET_KEY"] = os.getenv("SECRET_KEY")
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False  # To suppress a warning
 
-print(
-    f"Database URI: {app.config['SQLALCHEMY_DATABASE_URI']}"
-)  # Debugging print statement
-print(
-    f"os.getenv('DATABASE_URL'): {os.getenv('DATABASE_URL')}"
-)  # Debugging print statement
-
 from backend.models import db, User, Trip, Chatroom, ItineraryItem, Budget, Profile
 
 db.init_app(app)
+migrate = Migrate(app, db)
 
 from backend.auth import auth_bp, token_required
 from backend.chat import chat_bp
@@ -320,8 +316,6 @@ def initialize_database():
         else:
             print("Dummy trip already exists")
 
-
-initialize_database()
-
 if __name__ == "__main__":
+    initialize_database()
     app.run(debug=True)

@@ -4,3 +4,4 @@ backend/data/
 backend/__pycache__/
 venv
 __pycache__
+.dockerignore
