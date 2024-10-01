@@ -1,10 +1,19 @@
-from flask import Flask, render_template, request, jsonify, redirect, url_for, session
+# app.py
+from flask import (
+    Flask,
+    render_template,
+    request,
+    jsonify,
+    redirect,
+    url_for,
+    session,
+    flash,
+)
 from werkzeug.security import generate_password_hash
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os
 from datetime import datetime
-from bson.objectid import ObjectId
 import jwt
 from backend.itinerary import generate_invite_code
 
@@ -13,12 +22,14 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
-app.config["MONGO_URI"] = os.getenv("MONGO_URI")
+# Update the configuration for SQLAlchemy
+app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL")  # PostgreSQL URI
 app.config["SECRET_KEY"] = os.getenv("SECRET_KEY")
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False  # To suppress a warning
 
-from backend.models import mongo
+from backend.models import db, User, Trip, Chatroom, ItineraryItem, Budget, Profile
 
-mongo.init_app(app)
+db.init_app(app)
 
 from backend.auth import auth_bp, token_required
 from backend.chat import chat_bp
@@ -86,7 +97,7 @@ def trip(username, trip_name):
 @app.route("/trip/<trip_id>/chat")
 @token_required
 def trip_chat(current_user, trip_id):
-    trip = mongo.db.itineraries.find_one({"_id": ObjectId(trip_id)})
+    trip = Trip.query.get(trip_id)
     if not trip:
         return jsonify({"error": "Trip not found"}), 404
     return render_template(
@@ -99,14 +110,16 @@ def trip_chat(current_user, trip_id):
 
 @app.route("/trip/<trip_id>/budget")
 @token_required
-def budget(current_user, trip_id):
-    trip = mongo.db.itineraries.find_one({"_id": ObjectId(trip_id)})
-    user_ids = trip["users"]
+def budget_view(current_user, trip_id):
+    trip = Trip.query.get(trip_id)
+    if not trip:
+        return jsonify({"error": "Trip not found"}), 404
+
     user_budgets = []
-    for budget in trip["budget"]:
-        user = mongo.db.users.find_one({"_id": budget["user_id"]})
+    for budget in trip.budgets:
+        user = User.query.get(budget.user_id)
         if user:
-            user_budget = {"username": user["username"], "budget": budget}
+            user_budget = {"username": user.username, "budget": budget}
             user_budgets.append(user_budget)
 
     return render_template(
@@ -120,8 +133,8 @@ def budget(current_user, trip_id):
 
 @app.route("/trip/<trip_id>/itinerary")
 @token_required
-def itinerary(current_user, trip_id):
-    trip = mongo.db.itineraries.find_one({"_id": ObjectId(trip_id)})
+def itinerary_view(current_user, trip_id):
+    trip = Trip.query.get(trip_id)
     if not trip:
         return jsonify({"error": "Trip not found"}), 404
     return render_template(
@@ -136,22 +149,19 @@ def itinerary(current_user, trip_id):
 @token_required
 def mainpage(current_user, username):
     print(f"Mainpage route accessed for user: {username}")  # Debugging print statement
-    user = mongo.db.users.find_one({"username": username})
+    user = User.query.filter_by(username=username).first()
     if not user:
         return jsonify({"error": "User not found"}), 404
 
-    for trip in user["profile"]["past_trips"]:
-        user_names = []
-        for user_id in trip["users"]:
-            trip_user = mongo.db.users.find_one({"_id": ObjectId(user_id)})
-            if trip_user:
-                user_names.append(trip_user["username"])
-        trip["user_names"] = user_names
+    past_trips = user.profile.past_trips if user.profile else []
+    for trip in past_trips:
+        user_names = [u.username for u in trip.users]
+        trip.user_names = user_names
 
     return render_template(
         "mainpage.html",
         user=user,
-        trip=user["profile"]["past_trips"],
+        trip=past_trips,
         google_maps_api_key=os.getenv("GOOGLEMAPS_API_KEY"),
     )
 
@@ -162,15 +172,12 @@ def trip_detail(current_user, trip_id):
     print(
         f"Trip detail route accessed for trip_id: {trip_id}"
     )  # Debugging print statement
-    trip = mongo.db.itineraries.find_one({"_id": ObjectId(trip_id)})
+    trip = Trip.query.get(trip_id)
     if not trip:
         return jsonify({"error": "Trip not found"}), 404
-    users = []
-    for user_id in trip["users"]:
-        user = mongo.db.users.find_one({"_id": ObjectId(user_id)})
-        if user:
-            users.append(user["username"])
-    trip["user_names"] = users
+
+    users = [user.username for user in trip.users]
+    trip.user_names = users
 
     return render_template(
         "trip.html",
@@ -182,248 +189,129 @@ def trip_detail(current_user, trip_id):
 
 
 def initialize_database():
-    test_users = [
-        {
-            "username": "testuser1",
-            "password": "testpassword1",
-            "email": "testuser1@example.com",
-        },
-        {
-            "username": "testuser2",
-            "password": "testpassword2",
-            "email": "testuser2@example.com",
-        },
-    ]
+    with app.app_context():
+        db.create_all()  # Create tables based on models
 
-    user_ids = []
-    for user in test_users:
-        existing_user = mongo.db.users.find_one({"username": user["username"]})
-        if not existing_user:
-            hashed_password = generate_password_hash(user["password"])
-            user_id = mongo.db.users.insert_one(
-                {
-                    "username": user["username"],
-                    "password": hashed_password,
-                    "email": user["email"],
-                    "profile": {
-                        "name": f"Test User {user['username'][-1]}",
-                        "past_trips": [],
-                    },
-                }
-            ).inserted_id
-            user_ids.append(user_id)
-            print(f"Test user {user['username']} created with user_id: {user_id}")
-        else:
-            user_ids.append(existing_user["_id"])
-
-    # check if the itinerary already exists
-    existing_itinerary = mongo.db.itineraries.find_one({"trip_name": "Test Trip"})
-    if not existing_itinerary:
-        # create a dummy chatroom in the chatrooms collection
-        chatroom_id = mongo.db.chatrooms.insert_one(
+        test_users = [
             {
-                "chat_logs": [
-                    {
-                        "user_id": user_ids[0],
-                        "username": "testuser1",
-                        "message": "Looking forward to the trip!",
-                        "timestamp": datetime.utcnow().strftime("%H:%M"),
-                    },
-                    {
-                        "user_id": user_ids[1],
-                        "username": "testuser2",
-                        "message": "Don't forget to pack comfortable shoes.",
-                        "timestamp": datetime.utcnow().strftime("%H:%M"),
-                    },
-                ],
-            }
-        ).inserted_id
-
-        # create a dummy itinerary in the itineraries collection
-        itinerary_id = mongo.db.itineraries.insert_one(
+                "username": "testuser1",
+                "password": "testpassword1",
+                "email": "testuser1@example.com",
+            },
             {
-                "trip_name": "Test Trip",
-                "users": user_ids,
-                "chatroom_id": chatroom_id,
-                "itinerary": [
-                    {
-                        "activity": "Visit Eiffel Tower",
-                        "location": "Paris",
-                        "time": datetime(2022, 7, 15, 10, 0).isoformat(),
-                        "notes": "Buy tickets online",
-                    },
-                    {
-                        "activity": "Lunch at Le Jules Verne",
-                        "location": "Paris",
-                        "time": datetime(2022, 7, 15, 13, 0).isoformat(),
-                        "notes": "Reservation at 1 PM",
-                    },
-                ],
-                "budget": [
-                    {
-                        "user_id": user_ids[0],
-                        "flight": 300,
-                        "hotel": 400,
-                        "food": 200,
-                        "transport": 150,
-                        "activities": 200,
-                        "spending": 100,
-                    },
-                    {
-                        "user_id": user_ids[1],
-                        "flight": 200,
-                        "hotel": 300,
-                        "food": 100,
-                        "transport": 50,
-                        "activities": 100,
-                        "spending": 80,
-                    },
-                ],
-                "invite_code": generate_invite_code(),
-            }
-        ).inserted_id
+                "username": "testuser2",
+                "password": "testpassword2",
+                "email": "testuser2@example.com",
+            },
+        ]
 
-        itinerary = mongo.db.itineraries.find_one({"_id": ObjectId(itinerary_id)})
+        user_ids = []
+        for user_data in test_users:
+            user = User.query.filter_by(username=user_data["username"]).first()
+            if not user:
+                hashed_password = generate_password_hash(user_data["password"])
+                user = User(
+                    username=user_data["username"],
+                    password=hashed_password,
+                    email=user_data["email"],
+                )
+                profile = Profile(name=f"Test User {user_data['username'][-1]}")
+                user.profile = profile
+                db.session.add(user)
+                db.session.commit()
+                user_ids.append(user.id)
+                print(f"Test user {user.username} created with user_id: {user.id}")
+            else:
+                user_ids.append(user.id)
 
-        # add the itinerary to each user's past trips
-        for user_id in user_ids:
-            mongo.db.users.update_one(
-                {"_id": ObjectId(user_id)}, {"$push": {"profile.past_trips": itinerary}}
+        # Check if the itinerary already exists
+        existing_trip = Trip.query.filter_by(trip_name="Test Trip").first()
+        if not existing_trip:
+            # Create a dummy chatroom
+            chatroom = Chatroom()
+            db.session.add(chatroom)
+            db.session.commit()
+
+            # Create a dummy trip
+            invite_code = generate_invite_code()
+            trip = Trip(
+                trip_name="Test Trip",
+                chatroom=chatroom,
+                invite_code=invite_code,
             )
+            trip.users = User.query.filter(User.id.in_(user_ids)).all()
+            db.session.add(trip)
+            db.session.commit()
 
-        print(
-            f"Dummy itinerary added to past trips for both test users with itinerary_id: {itinerary_id}"
-        )
-    else:
-        # chatroom_id = existing_itinerary["chatroom_id"]
-        print("Dummy itinerary already exists with chatroom_id")
+            # Add itinerary items
+            itinerary_items = [
+                ItineraryItem(
+                    trip_id=trip.id,
+                    activity="Visit Eiffel Tower",
+                    location="Paris",
+                    time=datetime(2022, 7, 15, 10, 0),
+                    notes="Buy tickets online",
+                ),
+                ItineraryItem(
+                    trip_id=trip.id,
+                    activity="Lunch at Le Jules Verne",
+                    location="Paris",
+                    time=datetime(2022, 7, 15, 13, 0),
+                    notes="Reservation at 1 PM",
+                ),
+            ]
+            db.session.add_all(itinerary_items)
+            db.session.commit()
 
+            # Add budgets
+            budgets = [
+                Budget(
+                    trip_id=trip.id,
+                    user_id=user_ids[0],
+                    flight=300,
+                    hotel=400,
+                    food=200,
+                    transport=150,
+                    activities=200,
+                    spending=100,
+                ),
+                Budget(
+                    trip_id=trip.id,
+                    user_id=user_ids[1],
+                    flight=200,
+                    hotel=300,
+                    food=100,
+                    transport=50,
+                    activities=100,
+                    spending=80,
+                ),
+            ]
+            db.session.add_all(budgets)
+            db.session.commit()
 
-# def initialize_database():
-#     test_users = [
-#         {
-#             "username": "testuser1",
-#             "password": "testpassword1",
-#             "email": "testuser1@example.com",
-#         },
-#         {
-#             "username": "testuser2",
-#             "password": "testpassword2",
-#             "email": "testuser2@example.com",
-#         },
-#     ]
+            # Add chat logs
+            chat_logs = [
+                ChatLog(
+                    chatroom_id=chatroom.id,
+                    user_id=user_ids[0],
+                    username="testuser1",
+                    message="Looking forward to the trip!",
+                    timestamp=datetime.utcnow(),
+                ),
+                ChatLog(
+                    chatroom_id=chatroom.id,
+                    user_id=user_ids[1],
+                    username="testuser2",
+                    message="Don't forget to pack comfortable shoes.",
+                    timestamp=datetime.utcnow(),
+                ),
+            ]
+            db.session.add_all(chat_logs)
+            db.session.commit()
 
-#     user_ids = []
-#     for user in test_users:
-#         existing_user = mongo.db.users.find_one({"username": user["username"]})
-#         if not existing_user:
-#             hashed_password = generate_password_hash(user["password"])
-#             user_id = mongo.db.users.insert_one(
-#                 {
-#                     "username": user["username"],
-#                     "password": hashed_password,
-#                     "email": user["email"],
-#                     "profile": {
-#                         "name": f"Test User {user['username'][-1]}",
-#                         "past_trips": [],
-#                     },
-#                 }
-#             ).inserted_id
-#             user_ids.append(user_id)
-#             print(f"Test user {user['username']} created with user_id: {user_id}")
-#         else:
-#             user_ids.append(existing_user["_id"])
-
-#     # check if the itinerary already exists
-#     existing_itinerary = mongo.db.itineraries.find_one({"trip_name": "Test Trip"})
-#     if not existing_itinerary:
-#         # create a dummy chatroom in the chatrooms collection
-#         chatroom_id = mongo.db.chatrooms.insert_one(
-#             {
-#             "chat_logs": [
-#                 {
-#                 "user_id": user_ids[0],
-#                 "username": "testuser1",
-#                 "message": "Looking forward to the trip!",
-#                 "timestamp": datetime.utcnow().strftime("%H:%M"),
-#                 },
-#                 {
-#                 "user_id": user_ids[1],
-#                 "username": "testuser2",
-#                 "message": "Don't forget to pack comfortable shoes.",
-#                 "timestamp": datetime.utcnow().strftime("%H:%M"),
-#                 },
-#             ],
-#             }
-#         ).inserted_id
-
-#         # create a dummy itinerary in the itineraries collection
-#         itinerary_id = mongo.db.itineraries.insert_one(
-#             {
-#                 "trip_name": "Test Trip",
-#                 "users": user_ids,
-#                 "chatroom_id": chatroom_id,
-#                 "itinerary": [
-#                     {
-#                         "activity": "Visit Eiffel Tower",
-#                         "location": "Paris",
-#                         "time": datetime(2022, 7, 15, 10, 0).isoformat(),
-#                         "notes": "Buy tickets online",
-#                     },
-#                     {
-#                         "activity": "Lunch at Le Jules Verne",
-#                         "location": "Paris",
-#                         "time": datetime(2022, 7, 15, 13, 0).isoformat(),
-#                         "notes": "Reservation at 1 PM",
-#                     },
-
-#                 ],
-#                 "budget" :  [
-#                     {
-#                     "user_id": user_ids[0],
-#                     "flight": 300,
-#                     "hotel": 400,
-#                     "food": 200,
-#                     "transport": 150,
-#                     "activities": 200,
-#                     "spending": 100,
-#                     },
-#                     {
-#                     "user_id": user_ids[1],
-#                     "flight": 200,
-#                     "hotel": 300,
-#                     "food": 100,
-#                     "transport": 50,
-#                     "activities": 100,
-#                     "spending": 80,
-#                     },
-#                 ],
-#             }
-#         ).inserted_id
-
-#         itinerary = mongo.db.itineraries.find_one({"_id": ObjectId(itinerary_id)})
-
-#         # add the itinerary to each user's past trips
-#         for user_id in user_ids:
-#             mongo.db.users.update_one(
-#                 {"_id": ObjectId(user_id)}, {"$push": {"profile.past_trips": itinerary}}
-#             )
-
-#         print(
-#             f"Dummy itinerary added to past trips for both test users with itinerary_id: {itinerary_id}"
-#         )
-#     else:
-#         if "chatroom_id" not in existing_itinerary:
-#             chatroom_id = mongo.db.chatrooms.insert_one({"chat_logs": []}).inserted_id
-#             mongo.db.itineraries.update_one(
-#                 {"_id": existing_itinerary["_id"]},
-#                 {"$set": {"chatroom_id": chatroom_id}},
-#             )
-#             print(
-#                 f"Chatroom added to existing itinerary with id: {existing_itinerary['_id']}"
-#             )
-#         else:
-#             print("Dummy itinerary already exists with chatroom_id")
+            print(f"Dummy trip added with trip_id: {trip.id}")
+        else:
+            print("Dummy trip already exists")
 
 
 initialize_database()
