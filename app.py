@@ -23,9 +23,16 @@ app = Flask(__name__)
 CORS(app)
 
 # Update the configuration for SQLAlchemy
-app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL")  # PostgreSQL URI
+app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL")
 app.config["SECRET_KEY"] = os.getenv("SECRET_KEY")
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False  # To suppress a warning
+
+print(
+    f"Database URI: {app.config['SQLALCHEMY_DATABASE_URI']}"
+)  # Debugging print statement
+print(
+    f"os.getenv('DATABASE_URL'): {os.getenv('DATABASE_URL')}"
+)  # Debugging print statement
 
 from backend.models import db, User, Trip, Chatroom, ItineraryItem, Budget, Profile
 
