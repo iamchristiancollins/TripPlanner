@@ -1,10 +1,9 @@
-# Chat.py
+# chat.py
 import logging
 from flask import Blueprint, request, jsonify
-from backend.models import mongo
+from backend.models import db, Chatroom, ChatLog, Trip
 from backend.auth import token_required
 from datetime import datetime
-from bson.objectid import ObjectId
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -12,72 +11,58 @@ logger = logging.getLogger(__name__)
 
 chat_bp = Blueprint("chat", __name__)
 
-
 def serialize_chat_log(log):
-    if "_id" in log:
-        log["_id"] = str(log["_id"])
-    log["user_id"] = str(log["user_id"])
-    log["timestamp"] = log["timestamp"]
-    return log
-
+    return {
+        "id": log.id,
+        "user_id": log.user_id,
+        "username": log.username,
+        "message": log.message,
+        "timestamp": log.timestamp.isoformat(),
+    }
 
 @chat_bp.route("/<trip_id>/messages", methods=["POST"])
 @token_required
 def add_message(current_user, trip_id):
-    data = request.form
-    message = data.get("message")
+    message = request.form.get("message")
     if not message:
         return jsonify({"error": "Invalid input"}), 400
 
-    itinerary = mongo.db.itineraries.find_one({"_id": ObjectId(trip_id)})
-    if not itinerary:
-        return jsonify({"error": "Itinerary not found"}), 404
+    trip = Trip.query.get(trip_id)
+    if not trip:
+        return jsonify({"error": "Trip not found"}), 404
 
-    chatroom_id = itinerary["chatroom_id"]
+    chatroom = trip.chatroom
+    if not chatroom:
+        chatroom = Chatroom()
+        trip.chatroom = chatroom
+        db.session.add(chatroom)
+        db.session.commit()
 
-    # Log the message before adding it to the database
-    logger.info(f"Adding message: {message} for chatroom_id: {chatroom_id}")
-
-    mongo.db.chatrooms.update_one(
-        {"_id": ObjectId(chatroom_id)},
-        {
-            "$push": {
-                "chat_logs": {
-                    "user_id": current_user["_id"],
-                    "username": current_user["username"],
-                    "message": message,
-                    "timestamp": datetime.now(),
-                }
-            }
-        },
-        upsert=True,
+    new_log = ChatLog(
+        chatroom_id=chatroom.id,
+        user_id=current_user.id,
+        username=current_user.username,
+        message=message,
+        timestamp=datetime.utcnow(),
     )
+    db.session.add(new_log)
+    db.session.commit()
 
-    # Verify the update
-    chatroom = mongo.db.chatrooms.find_one({"_id": ObjectId(chatroom_id)})
-    logger.info(f"Chatroom after update: {chatroom}")
+    # Log the message
+    logger.info(f"Added message: {message} for chatroom_id: {chatroom.id}")
 
-    return (
-        jsonify({"message": "Message added", "username": current_user["username"]}),
-        201,
-    )
-
+    return jsonify({"message": "Message added", "username": current_user.username}), 201
 
 @chat_bp.route("/<trip_id>/messages", methods=["GET"])
 @token_required
 def get_messages(current_user, trip_id):
-    itinerary = mongo.db.itineraries.find_one({"_id": ObjectId(trip_id)})
-    if not itinerary:
-        return jsonify({"error": "Itinerary not found"}), 404
-
-    chatroom_id = itinerary["chatroom_id"]
-    chatroom = mongo.db.chatrooms.find_one({"_id": ObjectId(chatroom_id)})
-    if not chatroom:
+    trip = Trip.query.get(trip_id)
+    if not trip or not trip.chatroom:
         return jsonify({"error": "Chatroom not found"}), 404
 
-    chat_logs = [serialize_chat_log(log) for log in chatroom["chat_logs"]]
+    chat_logs = [serialize_chat_log(log) for log in trip.chatroom.chat_logs]
 
     # Log the retrieved messages
-    logger.info(f"Retrieved messages for chatroom_id: {chatroom_id} - {chat_logs}")
+    logger.info(f"Retrieved messages for chatroom_id: {trip.chatroom.id} - {chat_logs}")
 
     return jsonify(chat_logs), 200
